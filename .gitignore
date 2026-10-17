@@ -1,1 +1,9 @@
 .ipynb_checkpoints/
+dataset/
+.kaggle/
+kaggle.json
+*.keras
+*.h5
+modelos/
+.ipynb_checkpoints/
+__pycache__/
