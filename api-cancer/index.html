@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Predicción experimental de cáncer de mama</title>
+<style>
+  body { font-family: Arial, sans-serif; background: #f4f4f6; color: #222; margin: 0; padding: 24px 16px; }
+  main { max-width: 900px; margin: auto; background: #fff; padding: 24px; border-radius: 10px; }
+  h1 { font-size: 1.6rem; margin-top: 0; }
+  h2 { font-size: 1.1rem; margin: 24px 0 10px; }
+  .aviso { background: #fff4e5; border-left: 4px solid #e08a00; padding: 10px 14px; }
+  .botones { display: flex; flex-wrap: wrap; gap: 8px; }
+  button { padding: 9px 14px; border: 1px solid #bbb; border-radius: 6px; background: #fff; cursor: pointer; font-size: .95rem; }
+  button.principal { width: 100%; margin-top: 20px; background: #3b5bdb; color: #fff; border: none; font-size: 1rem; padding: 12px; }
+  fieldset { border: 1px solid #ddd; border-radius: 8px; margin: 0 0 14px; padding: 12px; }
+  legend { font-weight: bold; padding: 0 6px; }
+  .campos { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; }
+  label { display: flex; flex-direction: column; font-size: .85rem; gap: 4px; }
+  input { padding: 7px; border: 1px solid #ccc; border-radius: 5px; font-size: .9rem; }
+  #resultado { margin-top: 20px; padding: 14px; border-radius: 8px; background: #f1f3f5; }
+  .benigno { color: #2b8a3e; } .maligno { color: #c92a2a; } .error { color: #c92a2a; }
+  table { border-collapse: collapse; margin-top: 8px; }
+  th, td { border: 1px solid #ccc; padding: 6px 10px; text-align: center; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Predicción de cáncer de mama con una neurona de McCulloch-Pitts</h1>
+  <p class="aviso">Proyecto educativo. Este modelo no sirve para diagnosticar ni descartar cáncer.
+    Ante cualquier duda de salud, consulta a un profesional.</p>
+
+  <h2>Información del modelo</h2>
+  <div id="info">Cargando…</div>
+
+  <h2>Cargar un caso</h2>
+  <div class="botones" id="casos">
+    <button type="button" data-caso="medianas">Valores medianos</button>
+    <button type="button" id="aleatorio">Caso aleatorio</button>
+  </div>
+
+  <h2>Características</h2>
+  <form id="formulario">
+    <div id="grupos"></div>
+    <button type="submit" class="principal">Realizar predicción</button>
+  </form>
+
+  <div id="resultado" role="status" aria-live="polite">Carga un caso o escribe los valores y pulsa «Realizar predicción».</div>
+</main>
+
+<script>
+const TRADUCCION = {
+  "radius": "Radio", "texture": "Textura", "perimeter": "Perímetro", "area": "Área",
+  "smoothness": "Suavidad", "compactness": "Compacidad", "concavity": "Concavidad",
+  "concave points": "Puntos cóncavos", "symmetry": "Simetría", "fractal dimension": "Dimensión fractal"
+};
+const GRUPOS = [
+  ["mean", "Valores promedio"],
+  ["error", "Variación (error estándar)"],
+  ["worst", "Peores valores"]
+];
+const NOMBRE_CASO = {
+  benigno_acertado: "Caso benigno",
+  maligno_acertado: "Caso maligno",
+  maligno_fallado: "Caso que el modelo falla"
+};
+
+let nombres = [], medianas = {}, ejemplos = {}, realActual = null, origenActual = "";
+const resultado = document.getElementById("resultado");
+
+function grupoDe(n) {
+  if (n.startsWith("mean ")) return "mean";
+  if (n.endsWith(" error")) return "error";
+  return "worst";
+}
+function etiqueta(n) {
+  const base = n.replace(/^mean |^worst | error$/g, "");
+  return TRADUCCION[base] || n;
+}
+
+async function pedir(ruta, opciones) {
+  const r = await fetch(ruta, opciones);
+  const datos = await r.json();
+  if (!r.ok) throw new Error(datos.detail || "Error en la API.");
+  return datos;
+}
+
+function crearFormulario() {
+  const contenedor = document.getElementById("grupos");
+  GRUPOS.forEach(([id, titulo]) => {
+    const fs = document.createElement("fieldset");
+    fs.innerHTML = `<legend>${titulo}</legend><div class="campos"></div>`;
+    const campos = fs.querySelector(".campos");
+    nombres.filter(n => grupoDe(n) === id).forEach(n => {
+      const label = document.createElement("label");
+      label.textContent = etiqueta(n);
+      const input = document.createElement("input");
+      input.type = "number"; input.step = "any"; input.min = "0";
+      input.name = n; input.required = true;
+      input.addEventListener("input", () => { realActual = null; origenActual = ""; });
+      label.appendChild(input);
+      campos.appendChild(label);
+    });
+    contenedor.appendChild(fs);
+  });
+}
+
+function llenar(valores) {
+  nombres.forEach(n => { document.querySelector(`input[name="${n}"]`).value = valores[n]; });
+}
+
+function mostrarInfo(m) {
+  const met = m.metricas || {};
+  const mc = met.matriz_confusion;
+  let html = `<p>Threshold: <b>${m.threshold}</b> de ${nombres.length} entradas.
+    Exactitud en datos de prueba: <b>${(met.exactitud_prueba * 100).toFixed(1)} %</b>.
+    Detecta el <b>${(met.recall_maligno * 100).toFixed(1)} %</b> de los casos malignos.</p>`;
+  if (mc) {
+    html += `<table>
+      <tr><th></th><th>Predice maligno</th><th>Predice benigno</th></tr>
+      <tr><th>Real maligno</th><td>${mc[0][0]}</td><td>${mc[0][1]}</td></tr>
+      <tr><th>Real benigno</th><td>${mc[1][0]}</td><td>${mc[1][1]}</td></tr>
+    </table>`;
+  }
+  document.getElementById("info").innerHTML = html;
+}
+
+async function predecir() {
+  const datos = {};
+  for (const n of nombres) {
+    const valor = document.querySelector(`input[name="${n}"]`).value;
+    if (valor === "") {
+      resultado.innerHTML = `<span class="error">Falta el valor de «${etiqueta(n)}».</span>`;
+      return;
+    }
+    datos[n] = Number(valor);
+  }
+  resultado.textContent = "Procesando…";
+  try {
+    const r = await pedir("/predecir", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ datos })
+    });
+    const clase = r.prediccion === 1 ? "benigno" : "maligno";
+    let html = `<p>Resultado: <b class="${clase}">${r.resultado}</b></p>
+      <p>Entradas activas: ${r.suma_entradas} de ${nombres.length} (threshold ${r.threshold}).</p>`;
+    if (origenActual) html = `<p><small>${origenActual}</small></p>` + html;
+    if (realActual) {
+      let veredicto = "El modelo acierta.";
+      if (realActual !== r.resultado) {
+        veredicto = realActual === "Maligno"
+          ? "El modelo se equivoca (falso negativo)."
+          : "El modelo se equivoca (falso positivo).";
+      }
+      html += `<p>Diagnóstico real de este caso: <b>${realActual}</b>. ${veredicto}</p>`;
+    }
+    if (r.advertencia) html += `<p><small>${r.advertencia}</small></p>`;
+    resultado.innerHTML = html;
+  } catch (e) {
+    resultado.innerHTML = `<span class="error">${e.message}</span>`;
+  }
+}
+
+async function iniciar() {
+  try {
+    const [info, carac, ej] = await Promise.all([
+      pedir("/modelo"), pedir("/caracteristicas"), pedir("/ejemplos")
+    ]);
+    nombres = carac.caracteristicas; medianas = carac.medianas; ejemplos = ej;
+    mostrarInfo(info);
+    crearFormulario();
+    llenar(medianas);
+
+    const casos = document.getElementById("casos");
+    Object.keys(NOMBRE_CASO).filter(k => ejemplos[k]).forEach(k => {
+      const b = document.createElement("button");
+      b.type = "button"; b.dataset.caso = k; b.textContent = NOMBRE_CASO[k];
+      casos.appendChild(b);
+    });
+    casos.addEventListener("click", async e => {
+      const b = e.target.closest("button");
+      if (!b) return;
+
+      if (b.id === "aleatorio") {
+        try {
+          const c = await pedir("/aleatorio");
+          llenar(c.datos);
+          realActual = c.diagnostico_real;
+          origenActual = `Paciente ${c.numero} de ${c.total} del conjunto de prueba.`;
+        } catch (err) {
+          resultado.innerHTML = `<span class="error">${err.message}</span>`;
+          return;
+        }
+      } else if (b.dataset.caso === "medianas") {
+        llenar(medianas);
+        realActual = null;
+        origenActual = "Valores medianos del entrenamiento (no es un paciente real).";
+      } else {
+        const ej = ejemplos[b.dataset.caso];
+        llenar(ej.datos);
+        realActual = ej.diagnostico_real;
+        origenActual = ej.descripcion;
+      }
+      predecir();
+    });
+
+    document.getElementById("formulario").addEventListener("submit", e => {
+      e.preventDefault();
+      predecir();
+    });
+  } catch (e) {
+    document.getElementById("info").innerHTML =
+      '<span class="error">No se pudo conectar con la API. Verifica que uvicorn esté corriendo y que exista modelo_mp.joblib.</span>';
+  }
+}
+
+iniciar();
+</script>
+</body>
+</html>
